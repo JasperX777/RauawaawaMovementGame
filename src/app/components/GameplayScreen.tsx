@@ -1,7 +1,7 @@
 import { useEffect } from "react";
-import { useNavigate } from "react-router";
+import { useLocation, useNavigate } from "react-router";
 
-const GAME_IFRAME_PATH = "/mori-hero-game/index.html?embed=1";
+const VALID_WEAPONS = new Set(["none", "knife", "axe"]);
 
 type EmbeddedGameMessage =
   | {
@@ -19,6 +19,10 @@ type EmbeddedGameMessage =
 
 export function GameplayScreen() {
   const navigate = useNavigate();
+  const location = useLocation();
+  const weaponParam = new URLSearchParams(location.search).get("weapon") ?? "knife";
+  const weapon = VALID_WEAPONS.has(weaponParam) ? weaponParam : "knife";
+  const gameIframePath = `/mori-hero-game/index.html?embed=1&weapon=${encodeURIComponent(weapon)}`;
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent<EmbeddedGameMessage>) => {
@@ -50,7 +54,7 @@ export function GameplayScreen() {
     <div className="h-screen w-screen overflow-hidden bg-slate-950">
       <iframe
         title="Mori Hero Game"
-        src={GAME_IFRAME_PATH}
+        src={gameIframePath}
         className="h-full w-full border-0"
         allow="camera; microphone; autoplay"
       />

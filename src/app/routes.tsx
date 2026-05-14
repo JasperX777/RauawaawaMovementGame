@@ -3,6 +3,7 @@ import { StartScreen } from "./components/StartScreen";
 import { GameplayScreen } from "./components/GameplayScreen";
 import { ResultsScreen } from "./components/ResultsScreen";
 import { FlowDiagram } from "./components/FlowDiagram";
+import { WeaponSelectScreen } from "./components/WeaponSelectScreen";
 
 export const router = createBrowserRouter([
   {
@@ -12,6 +13,10 @@ export const router = createBrowserRouter([
   {
     path: "/gameplay",
     Component: GameplayScreen,
+  },
+  {
+    path: "/weapons",
+    Component: WeaponSelectScreen,
   },
   {
     path: "/results",

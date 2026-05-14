@@ -169,12 +169,12 @@ const WEAPONS = [
         bladeLengthRatio: 0.46,
         baseInsetRatio: 0.03,
         trailHue: 28,
-        coreColor: "rgba(255, 243, 227, 0.95)",
-        glowColor: "rgba(255, 157, 72, 0.88)",
-        trailWidth: 34,
-        tipWidth: 16,
+        coreColor: "rgba(255, 236, 185, 0.96)",
+        glowColor: "rgba(255, 128, 58, 0.88)",
+        trailWidth: 48,
+        tipWidth: 20,
         hitRadiusExtra: 96,
-        slashArcWidth: 42,
+        slashArcWidth: 54,
         style: "axe"
     }
 ];
@@ -344,6 +344,7 @@ let gameState = {
 
 const urlParams = new URLSearchParams(window.location.search);
 const EMBED_MODE = urlParams.get("embed") === "1";
+const EMBED_WEAPON = urlParams.get("weapon");
 let embedGameStarted = false;
 
 const canvas = document.getElementById("game-canvas");
@@ -417,6 +418,13 @@ function finishEmbeddedGame(resultType) {
 
 const loadedMonsterImages = [];
 const loadedWeapons = [];
+
+function weaponIndexFromParam(value) {
+    if (value === "none") return 0;
+    if (value === "knife") return 1;
+    if (value === "axe") return 2;
+    return 1;
+}
 
 // Logical (CSS-pixel) dimensions used by all game coordinate calculations.
 // Canvas buffers are sized at gameW/H × devicePixelRatio for crisp rendering.
@@ -1675,7 +1683,7 @@ function processWeaponSlash(history, segment, hue, trail) {
     const prev = history[history.length - 2];
     const curr = history[history.length - 1];
     const radiusExtra = curr.hitRadiusExtra ?? HIT_RADIUS_EXTRA;
-    if (curr.style === "knife") {
+    if (curr.style === "knife" || curr.style === "axe") {
         const palmDist = Math.hypot(curr.palmX - prev.palmX, curr.palmY - prev.palmY);
         if (palmDist < MIN_SLASH_LEN * 0.4) return;
         sampleHitsAlongLine(prev.palmX, prev.palmY, curr.palmX, curr.palmY, radiusExtra);
@@ -2007,76 +2015,6 @@ function getWeaponSegment(pose, wcfg) {
     };
 }
 
-function drawBladeSweep(ctx2, baseX, baseY, tipX, tipY, widthA, widthB, color, alpha, blur) {
-    const dx = tipX - baseX;
-    const dy = tipY - baseY;
-    const len = Math.hypot(dx, dy) || 1;
-    const nx = -dy / len;
-    const ny = dx / len;
-    ctx2.save();
-    ctx2.globalAlpha = alpha;
-    ctx2.fillStyle = color;
-    ctx2.shadowColor = color;
-    ctx2.shadowBlur = blur;
-    ctx2.beginPath();
-    ctx2.moveTo(baseX + nx * widthA, baseY + ny * widthA);
-    ctx2.lineTo(baseX - nx * widthA, baseY - ny * widthA);
-    ctx2.lineTo(tipX - nx * widthB, tipY - ny * widthB);
-    ctx2.lineTo(tipX + nx * widthB, tipY + ny * widthB);
-    ctx2.closePath();
-    ctx2.fill();
-    ctx2.restore();
-}
-
-function drawKnifeArc(ctx2, segmentA, segmentB, wcfg, alphaScale = 1) {
-    if (!segmentA || !segmentB) return;
-    const startInset = Math.min(16, segmentB.bladeLen * 0.08);
-    const startX = segmentB.baseX + Math.cos(segmentB.angle) * startInset;
-    const startY = segmentB.baseY + Math.sin(segmentB.angle) * startInset;
-    const midTipX = (segmentA.tipX + segmentB.tipX) * 0.5;
-    const midTipY = (segmentA.tipY + segmentB.tipY) * 0.5;
-    const cp1x = startX + Math.cos(segmentB.angle) * segmentB.bladeLen * 0.24;
-    const cp1y = startY + Math.sin(segmentB.angle) * segmentB.bladeLen * 0.24;
-    const cp2x = midTipX - Math.cos(segmentA.angle) * segmentA.bladeLen * 0.1;
-    const cp2y = midTipY - Math.sin(segmentA.angle) * segmentA.bladeLen * 0.1;
-
-    ctx2.save();
-    ctx2.globalAlpha = 0.14 * alphaScale;
-    ctx2.strokeStyle = wcfg.glowColor;
-    ctx2.lineCap = "butt";
-    ctx2.lineWidth = Math.max(8, wcfg.slashArcWidth * 0.82);
-    ctx2.shadowColor = wcfg.glowColor;
-    ctx2.shadowBlur = 18;
-    ctx2.beginPath();
-    ctx2.moveTo(startX, startY);
-    ctx2.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, segmentB.tipX, segmentB.tipY);
-    ctx2.stroke();
-    ctx2.restore();
-
-    ctx2.save();
-    ctx2.globalAlpha = 0.94 * alphaScale;
-    ctx2.strokeStyle = wcfg.coreColor;
-    ctx2.lineCap = "butt";
-    ctx2.lineWidth = Math.max(4, wcfg.tipWidth);
-    ctx2.shadowColor = "rgba(255,255,255,0.88)";
-    ctx2.shadowBlur = 8;
-    ctx2.beginPath();
-    ctx2.moveTo(startX, startY);
-    ctx2.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, segmentB.tipX, segmentB.tipY);
-    ctx2.stroke();
-    ctx2.restore();
-
-    ctx2.save();
-    ctx2.globalAlpha = 0.82 * alphaScale;
-    ctx2.fillStyle = wcfg.coreColor;
-    ctx2.shadowColor = wcfg.glowColor;
-    ctx2.shadowBlur = 10;
-    ctx2.beginPath();
-    ctx2.arc(segmentB.baseX, segmentB.baseY, 2.6, 0, Math.PI * 2);
-    ctx2.fill();
-    ctx2.restore();
-}
-
 function drawKnifePalmPoint(ctx2, pose, wcfg, alpha = 0.9) {
     ctx2.save();
     ctx2.globalAlpha = alpha;
@@ -2127,41 +2065,52 @@ function drawKnifePalmTrail(ctx2, pose, wcfg) {
     drawKnifePalmPoint(ctx2, pose, wcfg, 0.78);
 }
 
-function drawAxeFan(ctx2, segment, wcfg, alphaScale = 1) {
-    if (!segment) return;
-    const outer = wcfg.slashArcWidth;
-    const inner = Math.max(4, outer * 0.22);
-    const sweep = 0.38;
-    const a0 = segment.angle - sweep;
-    const a1 = segment.angle + sweep;
-    const cx = segment.baseX;
-    const cy = segment.baseY;
-    const r0 = segment.bladeLen * 0.36;
-    const r1 = segment.bladeLen * 0.98;
+function drawAxePalmTrail(ctx2, pose, wcfg) {
+    const trail = pose.trail || [];
+    const pts = [
+        ...trail.slice(0, 4).reverse().map((t) => ({ x: t.wx, y: t.wy })),
+        { x: pose.wx, y: pose.wy }
+    ];
+    if (pts.length < 2) {
+        drawKnifePalmPoint(ctx2, pose, wcfg, 0.86);
+        return;
+    }
 
+    const drawPass = (width, alpha, color, blur) => {
+        ctx2.save();
+        ctx2.globalAlpha = alpha;
+        ctx2.strokeStyle = color;
+        ctx2.lineCap = "round";
+        ctx2.lineJoin = "round";
+        ctx2.lineWidth = width;
+        ctx2.shadowColor = color;
+        ctx2.shadowBlur = blur;
+        ctx2.beginPath();
+        ctx2.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+            const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+            const my = (pts[i].y + pts[i + 1].y) * 0.5;
+            ctx2.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        const last = pts[pts.length - 1];
+        ctx2.lineTo(last.x, last.y);
+        ctx2.stroke();
+        ctx2.restore();
+    };
+
+    drawPass(wcfg.slashArcWidth, 0.23, wcfg.glowColor, 30);
+    drawPass(Math.max(14, wcfg.tipWidth), 0.72, wcfg.coreColor, 14);
     ctx2.save();
-    ctx2.globalAlpha = 0.22 * alphaScale;
-    ctx2.fillStyle = wcfg.glowColor;
+    ctx2.globalAlpha = 0.34;
+    ctx2.fillStyle = "rgba(255, 94, 35, 0.78)";
     ctx2.shadowColor = wcfg.glowColor;
-    ctx2.shadowBlur = 26;
+    ctx2.shadowBlur = 22;
+    const last = pts[pts.length - 1];
     ctx2.beginPath();
-    ctx2.arc(cx, cy, r1, a0, a1);
-    ctx2.arc(cx, cy, r0, a1, a0, true);
-    ctx2.closePath();
+    ctx2.arc(last.x, last.y, Math.max(12, wcfg.tipWidth * 0.75), 0, Math.PI * 2);
     ctx2.fill();
     ctx2.restore();
-
-    ctx2.save();
-    ctx2.globalAlpha = 0.52 * alphaScale;
-    ctx2.strokeStyle = wcfg.coreColor;
-    ctx2.lineWidth = inner;
-    ctx2.lineCap = "round";
-    ctx2.shadowColor = "rgba(255,255,255,0.78)";
-    ctx2.shadowBlur = 10;
-    ctx2.beginPath();
-    ctx2.arc(cx, cy, segment.bladeLen * 0.86, a0, a1);
-    ctx2.stroke();
-    ctx2.restore();
+    drawKnifePalmPoint(ctx2, pose, wcfg, 0.86);
 }
 
 function getActiveWeaponHand() {
@@ -2196,7 +2145,6 @@ function drawWeaponEffects(ctx2) {
         if (!pose) return;
         const segment = getWeaponSegment(pose, wcfg);
         if (!segment) return;
-        const { baseX, baseY, tipX, tipY, bladeLen } = segment;
         const sp = Math.hypot(pose.vx || 0, pose.vy || 0);
         const isSwinging = sp >= WEAPON_SWING_RENDER_SPEED && (pose.swingFrames || 0) >= WEAPON_SWING_CONFIRM_FRAMES;
         if (wcfg.style === "knife") {
@@ -2207,114 +2155,13 @@ function drawWeaponEffects(ctx2) {
             }
             return;
         }
-        if (!isSwinging) return;
-        const phase = _gleamTick / 200;
-
-        const trail = pose.trail || [];
-        trail.forEach((t, i) => {
-            const a = 0.16 - i * 0.038;
-            if (a <= 0) return;
-            const ghost = getWeaponSegment({ ...pose, wx: t.wx, wy: t.wy, angle: t.angle }, wcfg);
-            if (!ghost) return;
-            if (wcfg.style === "axe") {
-                drawAxeFan(ctx2, ghost, wcfg, a * 1.8);
-            } else {
-                const nextGhost = i === 0 ? segment : getWeaponSegment({ ...pose, wx: trail[i - 1].wx, wy: trail[i - 1].wy, angle: trail[i - 1].angle }, wcfg);
-                drawKnifeArc(ctx2, ghost, nextGhost, wcfg, a * 1.9);
-            }
-        });
-
         if (wcfg.style === "axe") {
-            drawAxeFan(ctx2, segment, wcfg, 1);
-            drawBladeSweep(
-                ctx2,
-                baseX,
-                baseY,
-                tipX,
-                tipY,
-                4,
-                wcfg.tipWidth + Math.min(10, sp / 14),
-                wcfg.glowColor,
-                0.28,
-                26
-            );
-            drawBladeSweep(
-                ctx2,
-                baseX,
-                baseY,
-                tipX,
-                tipY,
-                2.5,
-                wcfg.tipWidth * 0.6,
-                wcfg.coreColor,
-                0.88,
-                14
-            );
-            const crownX = tipX - Math.cos(segment.angle) * bladeLen * 0.1;
-            const crownY = tipY - Math.sin(segment.angle) * bladeLen * 0.1;
-            drawBladeSweep(
-                ctx2,
-                crownX,
-                crownY,
-                tipX,
-                tipY,
-                wcfg.tipWidth * 0.45,
-                wcfg.tipWidth * 0.95,
-                "rgba(255,255,255,0.82)",
-                0.45,
-                18
-            );
-        } else {
-            if (trail.length > 0) {
-                const leadGhost = getWeaponSegment({ ...pose, wx: trail[0].wx, wy: trail[0].wy, angle: trail[0].angle }, wcfg);
-                drawKnifeArc(ctx2, leadGhost, segment, wcfg, 1);
+            if (isSwinging) {
+                drawAxePalmTrail(ctx2, pose, wcfg);
+            } else {
+                drawKnifePalmPoint(ctx2, pose, wcfg, 0.82);
             }
-            if (sp > 6) {
-                ctx2.save();
-                ctx2.globalAlpha = Math.min(0.55, sp / 40);
-                ctx2.fillStyle = wcfg.coreColor;
-                ctx2.shadowColor = wcfg.glowColor;
-                ctx2.shadowBlur = 14;
-                ctx2.beginPath();
-                ctx2.arc(baseX, baseY, 4 + Math.min(4, sp / 18), 0, Math.PI * 2);
-                ctx2.fill();
-                ctx2.restore();
-            }
-        }
-
-        if (wcfg.style === "axe" && phase < 0.2) {
-            const gp = phase / 0.2;
-            const gleamX = baseX + (tipX - baseX) * gp;
-            const gleamY = baseY + (tipY - baseY) * gp;
-            ctx2.save();
-            ctx2.globalCompositeOperation = "lighter";
-            ctx2.globalAlpha = Math.sin(gp * Math.PI) * 0.4;
-            ctx2.strokeStyle = "rgba(255,255,255,0.95)";
-            ctx2.lineWidth = wcfg.style === "axe" ? wcfg.tipWidth * 0.8 : wcfg.tipWidth * 1.35;
-            ctx2.lineCap = "round";
-            ctx2.shadowColor = "rgba(255,255,255,0.98)";
-            ctx2.shadowBlur = 18;
-            ctx2.beginPath();
-            ctx2.moveTo(gleamX - Math.cos(segment.angle) * bladeLen * 0.12, gleamY - Math.sin(segment.angle) * bladeLen * 0.12);
-            ctx2.lineTo(gleamX + Math.cos(segment.angle) * bladeLen * 0.08, gleamY + Math.sin(segment.angle) * bladeLen * 0.08);
-            ctx2.stroke();
-            ctx2.restore();
-        }
-
-        if (gameState.weaponHitFlash > 0 && wcfg.style === "axe") {
-            const flashA = (gameState.weaponHitFlash / 9) * 0.82;
-            drawBladeSweep(
-                ctx2,
-                baseX,
-                baseY,
-                tipX,
-                tipY,
-                3,
-                wcfg.tipWidth + 5,
-                "rgba(255,255,255,0.92)",
-                flashA,
-                22
-            );
+            return;
         }
     };
 
@@ -2573,7 +2420,7 @@ function buildWeaponPicker() {
 async function init() {
     preloadImages();
     if (EMBED_MODE) {
-        gameState.selectedWeaponIndex = 1;
+        gameState.selectedWeaponIndex = weaponIndexFromParam(EMBED_WEAPON);
         startScreen.classList.add("hidden");
     }
 

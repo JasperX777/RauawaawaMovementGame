@@ -220,7 +220,7 @@ export function StartScreen() {
           </div>
 
           <Button
-            onClick={() => navigate("/gameplay")}
+            onClick={() => navigate("/weapons")}
             className="bg-gradient-to-r from-cyan-400 to-teal-400 hover:from-cyan-300 hover:to-teal-300 text-slate-950 px-20 py-10 text-4xl font-bold rounded-2xl shadow-2xl hover:shadow-3xl transition-all duration-200 flex items-center gap-6 border-4 border-amber-200"
           >
             <Hand className="w-12 h-12" />
