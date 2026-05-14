@@ -104,8 +104,19 @@ const STAGE_STORIES = [
 
 const MIN_SLASH_LEN = 20;
 const WRIST_HISTORY_MAX = 18;
-/** Exponential smoothing: higher = snappier, lower = smoother */
-const WRIST_SMOOTH_ALPHA = 0.32;
+/** Adaptive smoothing: still wrists get more damping, fast swings stay responsive */
+const WRIST_SMOOTH_ALPHA_MIN = 0.16;
+const WRIST_SMOOTH_ALPHA_MAX = 0.44;
+const WRIST_FAST_SPEED_PX = 64;
+const WRIST_LOST_GRACE_FRAMES = 8;
+const WRIST_HISTORY_KEEP_ON_LOST = 3;
+const WEAPON_JITTER_DEADZONE = 6;
+const WEAPON_SWING_RENDER_SPEED = 14;
+const WEAPON_IDLE_CLEAR_SPEED = 3.2;
+const WEAPON_SWING_TRIGGER_DIST = 18;
+const WEAPON_SWING_CONFIRM_FRAMES = 2;
+const POSE_ASSET_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/pose@0.5.1675469404";
+const HANDS_ASSET_BASE = "https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4.1675469240";
 const HIT_RADIUS_EXTRA = 88;
 // User request: make monsters 1.3x larger
 const MONSTER_SIZE_MULT = 1.3;
@@ -126,7 +137,7 @@ const monsterImages = [
 ];
 
 /**
- * Weapon art and grip parameters:
+ * Weapon effect parameters:
  * bladeForwardIdle: fixed blade tilt (rad) toward strike direction
  * bladeSwingFactor: extra alignment to instant velocity (0–1)
  */
@@ -136,21 +147,35 @@ const WEAPONS = [
         path: "img/weapon/knif.png",
         label: "Knife",
         angleOffset: 1.14,
-        anchorX: 0.5,
-        anchorY: 0.84,
-        scale: 1,
         bladeForwardIdle: 0.11,
-        bladeSwingFactor: 0.44
+        bladeSwingFactor: 0.44,
+        bladeLengthRatio: 0.62,
+        baseInsetRatio: 0.08,
+        trailHue: 196,
+        coreColor: "rgba(225, 252, 255, 0.96)",
+        glowColor: "rgba(79, 223, 255, 0.85)",
+        trailWidth: 20,
+        tipWidth: 6,
+        hitRadiusExtra: 72,
+        slashArcWidth: 28,
+        style: "knife"
     },
     {
         path: "img/weapon/axe.png",
         label: "Axe",
         angleOffset: 0.98,
-        anchorX: 0.5,
-        anchorY: 0.86,
-        scale: 1.02,
         bladeForwardIdle: 0.125,
-        bladeSwingFactor: 0.4
+        bladeSwingFactor: 0.4,
+        bladeLengthRatio: 0.46,
+        baseInsetRatio: 0.03,
+        trailHue: 28,
+        coreColor: "rgba(255, 243, 227, 0.95)",
+        glowColor: "rgba(255, 157, 72, 0.88)",
+        trailWidth: 34,
+        tipWidth: 16,
+        hitRadiusExtra: 96,
+        slashArcWidth: 42,
+        style: "axe"
     }
 ];
 
@@ -307,9 +332,11 @@ let gameState = {
     swingSparkles: [],
     leftWristHistory: [],
     rightWristHistory: [],
-    leftWristSmooth: { x: null, y: null },
-    rightWristSmooth: { x: null, y: null },
+    leftWristSmooth: { x: null, y: null, vx: 0, vy: 0, lostFrames: 0 },
+    rightWristSmooth: { x: null, y: null, vx: 0, vy: 0, lostFrames: 0 },
     selectedWeaponIndex: 0,
+    activeWeaponHand: "right",
+    handPalms: [],
     weaponPoseSmooth: { left: null, right: null },
     weaponHitFlash: 0,
     gripHintTimer: null
@@ -1506,7 +1533,7 @@ function approximateCubicLength(b0, b1, b2, b3) {
     return len;
 }
 
-function tryHitMonsterAt(px, py, hitIds) {
+function tryHitMonsterAt(px, py, hitIds, radiusExtra = HIT_RADIUS_EXTRA) {
     for (const monster of gameState.monsters) {
         if (!monster.alive || hitIds.has(monster)) continue;
 
@@ -1516,7 +1543,7 @@ function tryHitMonsterAt(px, py, hitIds) {
         const dy = monster.y - py;
         const dist2 = dx * dx + dy * dy;
 
-        const rHit = half + HIT_RADIUS_EXTRA;
+        const rHit = half + radiusExtra;
         const rNear = half + NEAR_HIT_RADIUS_EXTRA;
 
         if (dist2 < rHit * rHit) {
@@ -1557,7 +1584,7 @@ function tryHitMonsterAt(px, py, hitIds) {
     }
 }
 
-function sampleHitsAlongLine(px0, py0, px1, py1) {
+function sampleHitsAlongLine(px0, py0, px1, py1, radiusExtra = HIT_RADIUS_EXTRA) {
     const dx = px1 - px0;
     const dy = py1 - py0;
     const distance = Math.hypot(dx, dy);
@@ -1565,18 +1592,18 @@ function sampleHitsAlongLine(px0, py0, px1, py1) {
     const hitIds = new Set();
     for (let i = 0; i <= steps; i++) {
         const t = i / steps;
-        tryHitMonsterAt(px0 + dx * t, py0 + dy * t, hitIds);
+        tryHitMonsterAt(px0 + dx * t, py0 + dy * t, hitIds, radiusExtra);
     }
 }
 
-function sampleHitsAlongCubic(b0, b1, b2, b3) {
+function sampleHitsAlongCubic(b0, b1, b2, b3, radiusExtra = HIT_RADIUS_EXTRA) {
     const len = approximateCubicLength(b0, b1, b2, b3);
     const steps = Math.max(12, Math.ceil(len / 10));
     const hitIds = new Set();
     for (let i = 0; i <= steps; i++) {
         const t = i / steps;
         const pt = cubicBezierPoint(b0, b1, b2, b3, t);
-        tryHitMonsterAt(pt.x, pt.y, hitIds);
+        tryHitMonsterAt(pt.x, pt.y, hitIds, radiusExtra);
     }
 }
 
@@ -1586,13 +1613,22 @@ function sampleHitsAlongCubic(b0, b1, b2, b3) {
 function processWristSlash(history, x, y, hue, smoothRef, trail) {
     let px = x;
     let py = y;
+    let speed = 0;
     if (smoothRef.x != null && smoothRef.y != null) {
-        const a = WRIST_SMOOTH_ALPHA;
+        const dx = x - smoothRef.x;
+        const dy = y - smoothRef.y;
+        speed = Math.hypot(dx, dy);
+        const a = adaptiveWristAlpha(speed);
         px = a * x + (1 - a) * smoothRef.x;
         py = a * y + (1 - a) * smoothRef.y;
     }
+    const vx = smoothRef.x == null ? 0 : px - smoothRef.x;
+    const vy = smoothRef.y == null ? 0 : py - smoothRef.y;
     smoothRef.x = px;
     smoothRef.y = py;
+    smoothRef.vx = smoothRef.vx * 0.45 + vx * 0.55;
+    smoothRef.vy = smoothRef.vy * 0.45 + vy * 0.55;
+    smoothRef.lostFrames = 0;
 
     trail.push(px, py);   // feed continuous trail
 
@@ -1621,6 +1657,38 @@ function processWristSlash(history, x, y, hue, smoothRef, trail) {
         sampleHitsAlongCubic(bez.b0, bez.b1, bez.b2, bez.b3);
         emitSwingSparkles(p1.x, p1.y, p2.x, p2.y, segMove, hue);
     }
+}
+
+function processWeaponSlash(history, segment, hue, trail) {
+    if (!segment) return;
+    if ((segment.speed || 0) < WEAPON_IDLE_CLEAR_SPEED || (segment.swingFrames || 0) < WEAPON_SWING_CONFIRM_FRAMES) {
+        history.length = 0;
+        trail.clear();
+        return;
+    }
+    trail.push(segment.tipX, segment.tipY);
+
+    history.push(segment);
+    while (history.length > WRIST_HISTORY_MAX) history.shift();
+    if (history.length < 2) return;
+
+    const prev = history[history.length - 2];
+    const curr = history[history.length - 1];
+    const radiusExtra = curr.hitRadiusExtra ?? HIT_RADIUS_EXTRA;
+    if (curr.style === "knife") {
+        const palmDist = Math.hypot(curr.palmX - prev.palmX, curr.palmY - prev.palmY);
+        if (palmDist < MIN_SLASH_LEN * 0.4) return;
+        sampleHitsAlongLine(prev.palmX, prev.palmY, curr.palmX, curr.palmY, radiusExtra);
+        emitSwingSparkles(prev.palmX, prev.palmY, curr.palmX, curr.palmY, palmDist, hue);
+        return;
+    }
+
+    const tipDist = Math.hypot(curr.tipX - prev.tipX, curr.tipY - prev.tipY);
+    if (tipDist < MIN_SLASH_LEN * 0.4) return;
+
+    sampleHitsAlongLine(curr.baseX, curr.baseY, curr.tipX, curr.tipY, radiusExtra);
+    sampleHitsAlongLine(prev.tipX, prev.tipY, curr.tipX, curr.tipY, radiusExtra);
+    emitSwingSparkles(prev.tipX, prev.tipY, curr.tipX, curr.tipY, tipDist, hue);
 }
 
 // Spawn sparkle particles along the slash segment; play whoosh above speed threshold.
@@ -1652,6 +1720,63 @@ function unwrapAngleDiff(a, b) {
 
 function lerpAngle(a, b, t) {
     return a + unwrapAngleDiff(b, a) * t;
+}
+
+function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+}
+
+function adaptiveWristAlpha(speed) {
+    const t = clamp(speed / WRIST_FAST_SPEED_PX, 0, 1);
+    return WRIST_SMOOTH_ALPHA_MIN + (WRIST_SMOOTH_ALPHA_MAX - WRIST_SMOOTH_ALPHA_MIN) * t;
+}
+
+function clearWristTracking(history, smoothRef, trail, preserveTrail = true) {
+    history.length = 0;
+    smoothRef.x = null;
+    smoothRef.y = null;
+    smoothRef.vx = 0;
+    smoothRef.vy = 0;
+    smoothRef.lostFrames = 0;
+    if (!preserveTrail) trail.clear();
+}
+
+function toScreenPoint(lm) {
+    return {
+        x: (1 - lm.x) * gameW,
+        y: lm.y * gameH
+    };
+}
+
+function onHandsResults(results) {
+    const hands = results.multiHandLandmarks || [];
+    gameState.handPalms = hands.map((hand) => {
+        const wrist = toScreenPoint(hand[0]);
+        const knuckles = [5, 9, 13, 17].map((idx) => toScreenPoint(hand[idx]));
+        const knuckleCenter = knuckles.reduce(
+            (acc, pt) => ({ x: acc.x + pt.x / knuckles.length, y: acc.y + pt.y / knuckles.length }),
+            { x: 0, y: 0 }
+        );
+        return {
+            x: wrist.x * 0.32 + knuckleCenter.x * 0.68,
+            y: wrist.y * 0.32 + knuckleCenter.y * 0.68,
+            wristX: wrist.x,
+            wristY: wrist.y
+        };
+    });
+}
+
+function matchHandPalmToPose(poseWristX, poseWristY) {
+    let best = null;
+    let bestDist = Infinity;
+    for (const palm of gameState.handPalms) {
+        const d = Math.hypot(palm.wristX - poseWristX, palm.wristY - poseWristY);
+        if (d < bestDist) {
+            best = palm;
+            bestDist = d;
+        }
+    }
+    return bestDist < Math.max(90, gameW * 0.16) ? best : null;
 }
 
 /**
@@ -1704,7 +1829,11 @@ function computeWeaponAngle(ex, ey, wx, wy, vx, vy, isLeft) {
 }
 
 function smoothWeaponPose(prev, raw) {
-    if (!raw) return null;
+    if (!raw) {
+        if (!prev) return null;
+        const lostFrames = (prev.lostFrames || 0) + 1;
+        return lostFrames > WRIST_LOST_GRACE_FRAMES ? null : { ...prev, lostFrames };
+    }
     if (!prev) {
         const angle = computeWeaponAngle(raw.ex, raw.ey, raw.wx, raw.wy, 0, 0, raw.isLeft);
         return {
@@ -1716,26 +1845,69 @@ function smoothWeaponPose(prev, raw) {
             ey: raw.ey,
             isLeft: raw.isLeft,
             vx: 0,
-            vy: 0
+            vy: 0,
+            stableFrames: 0,
+            swingFrames: 0,
+            lostFrames: 0
         };
     }
-    const k = 0.44;
+    const rawDx = raw.wx - prev.wx;
+    const rawDy = raw.wy - prev.wy;
+    const rawSpeed = Math.hypot(rawDx, rawDy);
+    if (rawSpeed < WEAPON_JITTER_DEADZONE) {
+        const vx = prev.vx * 0.22;
+        const vy = prev.vy * 0.22;
+        const angle = smoothAngleRad(
+            prev.angle,
+            computeWeaponAngle(raw.ex, raw.ey, prev.wx, prev.wy, vx, vy, raw.isLeft),
+            0.12
+        );
+        return {
+            ...prev,
+            ex: raw.ex,
+            ey: raw.ey,
+            armLen: prev.armLen * 0.78 + raw.armLen * 0.22,
+            angle,
+            vx,
+            vy,
+            stableFrames: (prev.stableFrames || 0) + 1,
+            swingFrames: 0,
+            lostFrames: 0
+        };
+    }
+    const k = 0.24 + 0.34 * clamp(rawSpeed / 70, 0, 1);
     const wx = prev.wx + (raw.wx - prev.wx) * k;
     const wy = prev.wy + (raw.wy - prev.wy) * k;
     const rvx = wx - prev.wx;
     const rvy = wy - prev.wy;
-    const vx = prev.vx * 0.52 + rvx * 0.48;
-    const vy = prev.vy * 0.52 + rvy * 0.48;
-    const al = prev.armLen * 0.52 + raw.armLen * 0.48;
+    const velK = 0.34 + 0.24 * clamp(rawSpeed / 80, 0, 1);
+    const vx = prev.vx * (1 - velK) + rvx * velK;
+    const vy = prev.vy * (1 - velK) + rvy * velK;
+    const al = prev.armLen * 0.58 + raw.armLen * 0.42;
     let angle = computeWeaponAngle(raw.ex, raw.ey, wx, wy, vx, vy, raw.isLeft);
-    angle = smoothAngleRad(prev.angle, angle, 0.4);
+    angle = smoothAngleRad(prev.angle, angle, 0.24 + 0.3 * clamp(rawSpeed / 85, 0, 1));
     // Keep last 4 positions for motion-blur trail
     const trail = [{ wx: prev.wx, wy: prev.wy, angle: prev.angle }, ...(prev.trail || [])].slice(0, 4);
-    return { wx, wy, angle, armLen: al, ex: raw.ex, ey: raw.ey, isLeft: raw.isLeft, vx, vy, trail };
+    return {
+        wx,
+        wy,
+        angle,
+        armLen: al,
+        ex: raw.ex,
+        ey: raw.ey,
+        isLeft: raw.isLeft,
+        vx,
+        vy,
+        trail,
+        stableFrames: 0,
+        swingFrames: rawSpeed > WEAPON_SWING_TRIGGER_DIST ? Math.min((prev.swingFrames || 0) + 1, 12) : 0,
+        lostFrames: 0
+    };
 }
 
 /**
- * Shoulder–elbow–wrist defines forearm; grip point shifts toward palm side and slightly thumb-ward for fist alignment
+ * Prefer MediaPipe Hands for a real palm center. Pose is kept as a fallback so the
+ * game still works if the hand model briefly drops a frame.
  */
 function updateWeaponHandPose(landmarks) {
     const L = landmarks;
@@ -1749,21 +1921,26 @@ function updateWeaponHandPose(landmarks) {
         const sy = s.y * gameH;
         const ex = (1 - e.x) * gameW;
         const ey = e.y * gameH;
-        const wx = (1 - w.x) * gameW;
-        const wy = w.y * gameH;
-        const dx = wx - ex;
-        const dy = wy - ey;
+        const poseWx = (1 - w.x) * gameW;
+        const poseWy = w.y * gameH;
+        const palm = matchHandPalmToPose(poseWx, poseWy);
+        let wx = poseWx;
+        let wy = poseWy;
+        let dx = wx - ex;
+        let dy = wy - ey;
         const armLen = Math.hypot(dx, dy) || 1;
-        const ux = dx / armLen;
-        const uy = dy / armLen;
-        const along = armLen * 0.168;
-        const thumb = armLen * 0.045;
-        const perpX = -uy;
-        const perpY = ux;
-        const thumbSign = isLeft ? -1 : 1;
-        const gx = wx + ux * along + perpX * thumb * thumbSign;
-        const gy = wy + uy * along + perpY * thumb * thumbSign;
-        return { wx: gx, wy: gy, armLen, ex, ey, isLeft };
+        if (palm) {
+            wx = palm.x;
+            wy = palm.y;
+            dx = wx - ex;
+            dy = wy - ey;
+        } else {
+            const ux = dx / armLen;
+            const uy = dy / armLen;
+            wx += ux * armLen * 0.075;
+            wy += uy * armLen * 0.075;
+        }
+        return { wx, wy, armLen: Math.hypot(dx, dy) || armLen, ex, ey, isLeft };
     };
 
     gameState.weaponPoseSmooth.left = smoothWeaponPose(gameState.weaponPoseSmooth.left, build(11, 13, 15, true));
@@ -1800,95 +1977,352 @@ function weaponDisplayWidthPx(armLen) {
     return bw;
 }
 
-function drawHeldWeapons(ctx2) {
+function getWeaponSegment(pose, wcfg) {
+    if (!pose || !wcfg || wcfg.noWeapon) return null;
+    const reach = weaponDisplayWidthPx(pose.armLen || 200);
+    const tilt = weaponBladeTiltAdditive(wcfg, pose, pose.isLeft);
+    const angle = pose.angle + wcfg.angleOffset + tilt;
+    const dirX = Math.cos(angle);
+    const dirY = Math.sin(angle);
+    const baseInset = reach * (wcfg.baseInsetRatio ?? 0.04);
+    const bladeLen = reach * (wcfg.bladeLengthRatio ?? 0.5);
+    const baseX = pose.wx - dirX * baseInset;
+    const baseY = pose.wy - dirY * baseInset;
+    const tipX = baseX + dirX * bladeLen;
+    const tipY = baseY + dirY * bladeLen;
+    return {
+        baseX,
+        baseY,
+        tipX,
+        tipY,
+        angle,
+        bladeLen,
+        palmX: pose.wx,
+        palmY: pose.wy,
+        speed: Math.hypot(pose.vx || 0, pose.vy || 0),
+        swingFrames: pose.swingFrames || 0,
+        style: wcfg.style,
+        hitRadiusExtra: wcfg.hitRadiusExtra ?? HIT_RADIUS_EXTRA,
+        slashArcWidth: wcfg.slashArcWidth ?? 24
+    };
+}
+
+function drawBladeSweep(ctx2, baseX, baseY, tipX, tipY, widthA, widthB, color, alpha, blur) {
+    const dx = tipX - baseX;
+    const dy = tipY - baseY;
+    const len = Math.hypot(dx, dy) || 1;
+    const nx = -dy / len;
+    const ny = dx / len;
+    ctx2.save();
+    ctx2.globalAlpha = alpha;
+    ctx2.fillStyle = color;
+    ctx2.shadowColor = color;
+    ctx2.shadowBlur = blur;
+    ctx2.beginPath();
+    ctx2.moveTo(baseX + nx * widthA, baseY + ny * widthA);
+    ctx2.lineTo(baseX - nx * widthA, baseY - ny * widthA);
+    ctx2.lineTo(tipX - nx * widthB, tipY - ny * widthB);
+    ctx2.lineTo(tipX + nx * widthB, tipY + ny * widthB);
+    ctx2.closePath();
+    ctx2.fill();
+    ctx2.restore();
+}
+
+function drawKnifeArc(ctx2, segmentA, segmentB, wcfg, alphaScale = 1) {
+    if (!segmentA || !segmentB) return;
+    const startInset = Math.min(16, segmentB.bladeLen * 0.08);
+    const startX = segmentB.baseX + Math.cos(segmentB.angle) * startInset;
+    const startY = segmentB.baseY + Math.sin(segmentB.angle) * startInset;
+    const midTipX = (segmentA.tipX + segmentB.tipX) * 0.5;
+    const midTipY = (segmentA.tipY + segmentB.tipY) * 0.5;
+    const cp1x = startX + Math.cos(segmentB.angle) * segmentB.bladeLen * 0.24;
+    const cp1y = startY + Math.sin(segmentB.angle) * segmentB.bladeLen * 0.24;
+    const cp2x = midTipX - Math.cos(segmentA.angle) * segmentA.bladeLen * 0.1;
+    const cp2y = midTipY - Math.sin(segmentA.angle) * segmentA.bladeLen * 0.1;
+
+    ctx2.save();
+    ctx2.globalAlpha = 0.14 * alphaScale;
+    ctx2.strokeStyle = wcfg.glowColor;
+    ctx2.lineCap = "butt";
+    ctx2.lineWidth = Math.max(8, wcfg.slashArcWidth * 0.82);
+    ctx2.shadowColor = wcfg.glowColor;
+    ctx2.shadowBlur = 18;
+    ctx2.beginPath();
+    ctx2.moveTo(startX, startY);
+    ctx2.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, segmentB.tipX, segmentB.tipY);
+    ctx2.stroke();
+    ctx2.restore();
+
+    ctx2.save();
+    ctx2.globalAlpha = 0.94 * alphaScale;
+    ctx2.strokeStyle = wcfg.coreColor;
+    ctx2.lineCap = "butt";
+    ctx2.lineWidth = Math.max(4, wcfg.tipWidth);
+    ctx2.shadowColor = "rgba(255,255,255,0.88)";
+    ctx2.shadowBlur = 8;
+    ctx2.beginPath();
+    ctx2.moveTo(startX, startY);
+    ctx2.bezierCurveTo(cp1x, cp1y, cp2x, cp2y, segmentB.tipX, segmentB.tipY);
+    ctx2.stroke();
+    ctx2.restore();
+
+    ctx2.save();
+    ctx2.globalAlpha = 0.82 * alphaScale;
+    ctx2.fillStyle = wcfg.coreColor;
+    ctx2.shadowColor = wcfg.glowColor;
+    ctx2.shadowBlur = 10;
+    ctx2.beginPath();
+    ctx2.arc(segmentB.baseX, segmentB.baseY, 2.6, 0, Math.PI * 2);
+    ctx2.fill();
+    ctx2.restore();
+}
+
+function drawKnifePalmPoint(ctx2, pose, wcfg, alpha = 0.9) {
+    ctx2.save();
+    ctx2.globalAlpha = alpha;
+    ctx2.fillStyle = wcfg.coreColor;
+    ctx2.shadowColor = wcfg.glowColor;
+    ctx2.shadowBlur = 12;
+    ctx2.beginPath();
+    ctx2.arc(pose.wx, pose.wy, 4.5, 0, Math.PI * 2);
+    ctx2.fill();
+    ctx2.restore();
+}
+
+function drawKnifePalmTrail(ctx2, pose, wcfg) {
+    const trail = pose.trail || [];
+    const pts = [
+        ...trail.slice(0, 5).reverse().map((t) => ({ x: t.wx, y: t.wy })),
+        { x: pose.wx, y: pose.wy }
+    ];
+    if (pts.length < 2) {
+        drawKnifePalmPoint(ctx2, pose, wcfg);
+        return;
+    }
+
+    const drawPass = (width, alpha, color, blur) => {
+        ctx2.save();
+        ctx2.globalAlpha = alpha;
+        ctx2.strokeStyle = color;
+        ctx2.lineCap = "round";
+        ctx2.lineJoin = "round";
+        ctx2.lineWidth = width;
+        ctx2.shadowColor = color;
+        ctx2.shadowBlur = blur;
+        ctx2.beginPath();
+        ctx2.moveTo(pts[0].x, pts[0].y);
+        for (let i = 1; i < pts.length - 1; i++) {
+            const mx = (pts[i].x + pts[i + 1].x) * 0.5;
+            const my = (pts[i].y + pts[i + 1].y) * 0.5;
+            ctx2.quadraticCurveTo(pts[i].x, pts[i].y, mx, my);
+        }
+        const last = pts[pts.length - 1];
+        ctx2.lineTo(last.x, last.y);
+        ctx2.stroke();
+        ctx2.restore();
+    };
+
+    drawPass(wcfg.slashArcWidth, 0.18, wcfg.glowColor, 24);
+    drawPass(Math.max(5, wcfg.tipWidth + 2), 0.95, wcfg.coreColor, 10);
+    drawKnifePalmPoint(ctx2, pose, wcfg, 0.78);
+}
+
+function drawAxeFan(ctx2, segment, wcfg, alphaScale = 1) {
+    if (!segment) return;
+    const outer = wcfg.slashArcWidth;
+    const inner = Math.max(4, outer * 0.22);
+    const sweep = 0.38;
+    const a0 = segment.angle - sweep;
+    const a1 = segment.angle + sweep;
+    const cx = segment.baseX;
+    const cy = segment.baseY;
+    const r0 = segment.bladeLen * 0.36;
+    const r1 = segment.bladeLen * 0.98;
+
+    ctx2.save();
+    ctx2.globalAlpha = 0.22 * alphaScale;
+    ctx2.fillStyle = wcfg.glowColor;
+    ctx2.shadowColor = wcfg.glowColor;
+    ctx2.shadowBlur = 26;
+    ctx2.beginPath();
+    ctx2.arc(cx, cy, r1, a0, a1);
+    ctx2.arc(cx, cy, r0, a1, a0, true);
+    ctx2.closePath();
+    ctx2.fill();
+    ctx2.restore();
+
+    ctx2.save();
+    ctx2.globalAlpha = 0.52 * alphaScale;
+    ctx2.strokeStyle = wcfg.coreColor;
+    ctx2.lineWidth = inner;
+    ctx2.lineCap = "round";
+    ctx2.shadowColor = "rgba(255,255,255,0.78)";
+    ctx2.shadowBlur = 10;
+    ctx2.beginPath();
+    ctx2.arc(cx, cy, segment.bladeLen * 0.86, a0, a1);
+    ctx2.stroke();
+    ctx2.restore();
+}
+
+function getActiveWeaponHand() {
+    const left = gameState.weaponPoseSmooth.left;
+    const right = gameState.weaponPoseSmooth.right;
+    if (!left && !right) return null;
+    if (!left) return "right";
+    if (!right) return "left";
+
+    const leftSpeed = Math.hypot(left.vx || 0, left.vy || 0);
+    const rightSpeed = Math.hypot(right.vx || 0, right.vy || 0);
+    const current = gameState.activeWeaponHand === "left" ? left : right;
+    const other = gameState.activeWeaponHand === "left" ? right : left;
+    const currentSpeed = Math.hypot(current?.vx || 0, current?.vy || 0);
+    const otherSpeed = Math.hypot(other?.vx || 0, other?.vy || 0);
+
+    if (otherSpeed > currentSpeed + 8) {
+        return gameState.activeWeaponHand === "left" ? "right" : "left";
+    }
+    return leftSpeed >= rightSpeed ? "left" : "right";
+}
+
+function drawWeaponEffects(ctx2) {
     const wcfg = WEAPONS[gameState.selectedWeaponIndex];
     if (!wcfg || wcfg.noWeapon) return;
-    const img = loadedWeapons[gameState.selectedWeaponIndex];
-    if (!img || !img.complete || !img.naturalWidth) return;
 
     _gleamTick = (_gleamTick + 1) % 200;
+    const activeHand = getActiveWeaponHand();
+    gameState.activeWeaponHand = activeHand || gameState.activeWeaponHand;
 
-    const drawOne = (pose, flip) => {
+    const drawOne = (pose) => {
         if (!pose) return;
-        const { wx, wy, angle, armLen, vx, vy } = pose;
-        const sp = Math.hypot(vx || 0, vy || 0);
+        const segment = getWeaponSegment(pose, wcfg);
+        if (!segment) return;
+        const { baseX, baseY, tipX, tipY, bladeLen } = segment;
+        const sp = Math.hypot(pose.vx || 0, pose.vy || 0);
+        const isSwinging = sp >= WEAPON_SWING_RENDER_SPEED && (pose.swingFrames || 0) >= WEAPON_SWING_CONFIRM_FRAMES;
+        if (wcfg.style === "knife") {
+            if (isSwinging) {
+                drawKnifePalmTrail(ctx2, pose, wcfg);
+            } else {
+                drawKnifePalmPoint(ctx2, pose, wcfg, 0.82);
+            }
+            return;
+        }
+        if (!isSwinging) return;
+        const phase = _gleamTick / 200;
 
-        let bw = weaponDisplayWidthPx(armLen || 200) * wcfg.scale;
-        const cw = gameW || 800;
-        bw = Math.min(bw, Math.min(480, cw * 0.46));
-        const bh = (img.naturalHeight / img.naturalWidth) * bw;
-        const tilt = weaponBladeTiltAdditive(wcfg, pose, flip);
-        const totalAngle = angle + wcfg.angleOffset + tilt;
-        const ax = wcfg.anchorX * bw;
-        const ay = wcfg.anchorY * bh;
-
-        // ── 1. Motion-blur ghost trail ────────────────────────────────
         const trail = pose.trail || [];
         trail.forEach((t, i) => {
             const a = 0.16 - i * 0.038;
             if (a <= 0) return;
-            const sc = 1 - i * 0.025;
-            ctx2.save();
-            ctx2.globalAlpha = a;
-            ctx2.translate(t.wx, t.wy);
-            ctx2.rotate(t.angle + wcfg.angleOffset + tilt);
-            if (flip) ctx2.scale(-1, 1);
-            ctx2.drawImage(img, -ax * sc, -ay * sc, bw * sc, bh * sc);
-            ctx2.restore();
+            const ghost = getWeaponSegment({ ...pose, wx: t.wx, wy: t.wy, angle: t.angle }, wcfg);
+            if (!ghost) return;
+            if (wcfg.style === "axe") {
+                drawAxeFan(ctx2, ghost, wcfg, a * 1.8);
+            } else {
+                const nextGhost = i === 0 ? segment : getWeaponSegment({ ...pose, wx: trail[i - 1].wx, wy: trail[i - 1].wy, angle: trail[i - 1].angle }, wcfg);
+                drawKnifeArc(ctx2, ghost, nextGhost, wcfg, a * 1.9);
+            }
         });
 
-        // ── 2. Main weapon (slight speed-scale boost) ─────────────────
-        const speedBoost = 1 + Math.min(sp / 260, 0.10);
-        const dbw = bw * speedBoost, dbh = bh * speedBoost;
-        const dax = ax * speedBoost, day = ay * speedBoost;
-
-        ctx2.save();
-        ctx2.translate(wx, wy);
-        ctx2.rotate(totalAngle);
-        if (flip) ctx2.scale(-1, 1);
-
-        ctx2.shadowColor = "rgba(0,0,0,0.55)";
-        ctx2.shadowBlur = 14;
-        ctx2.shadowOffsetX = 3;
-        ctx2.shadowOffsetY = 5;
-        ctx2.drawImage(img, -dax, -day, dbw, dbh);
-        ctx2.shadowColor = "transparent";
-        ctx2.shadowBlur = 0;
-        ctx2.shadowOffsetX = 0;
-        ctx2.shadowOffsetY = 0;
-
-        // ── 3. Periodic blade gleam (diagonal light sweep) ────────────
-        const gPhase = _gleamTick / 200;   // 0..1
-        if (gPhase < 0.22) {
-            const gp  = gPhase / 0.22;    // 0..1 within gleam window
-            const gAlpha = Math.sin(gp * Math.PI) * 0.45;
-            const sweepX = -dax + dbw * gp;
-            const halfW  = dbw * 0.28;
-            const grad = ctx2.createLinearGradient(sweepX - halfW, -day, sweepX + halfW, -day + dbh * 0.6);
-            grad.addColorStop(0,   `rgba(255,255,255,0)`);
-            grad.addColorStop(0.5, `rgba(255,255,255,${gAlpha})`);
-            grad.addColorStop(1,   `rgba(255,255,255,0)`);
-            ctx2.globalCompositeOperation = "lighter";
-            ctx2.fillStyle = grad;
-            ctx2.fillRect(-dax, -day, dbw, dbh * 0.62);
-            ctx2.globalCompositeOperation = "source-over";
+        if (wcfg.style === "axe") {
+            drawAxeFan(ctx2, segment, wcfg, 1);
+            drawBladeSweep(
+                ctx2,
+                baseX,
+                baseY,
+                tipX,
+                tipY,
+                4,
+                wcfg.tipWidth + Math.min(10, sp / 14),
+                wcfg.glowColor,
+                0.28,
+                26
+            );
+            drawBladeSweep(
+                ctx2,
+                baseX,
+                baseY,
+                tipX,
+                tipY,
+                2.5,
+                wcfg.tipWidth * 0.6,
+                wcfg.coreColor,
+                0.88,
+                14
+            );
+            const crownX = tipX - Math.cos(segment.angle) * bladeLen * 0.1;
+            const crownY = tipY - Math.sin(segment.angle) * bladeLen * 0.1;
+            drawBladeSweep(
+                ctx2,
+                crownX,
+                crownY,
+                tipX,
+                tipY,
+                wcfg.tipWidth * 0.45,
+                wcfg.tipWidth * 0.95,
+                "rgba(255,255,255,0.82)",
+                0.45,
+                18
+            );
+        } else {
+            if (trail.length > 0) {
+                const leadGhost = getWeaponSegment({ ...pose, wx: trail[0].wx, wy: trail[0].wy, angle: trail[0].angle }, wcfg);
+                drawKnifeArc(ctx2, leadGhost, segment, wcfg, 1);
+            }
+            if (sp > 6) {
+                ctx2.save();
+                ctx2.globalAlpha = Math.min(0.55, sp / 40);
+                ctx2.fillStyle = wcfg.coreColor;
+                ctx2.shadowColor = wcfg.glowColor;
+                ctx2.shadowBlur = 14;
+                ctx2.beginPath();
+                ctx2.arc(baseX, baseY, 4 + Math.min(4, sp / 18), 0, Math.PI * 2);
+                ctx2.fill();
+                ctx2.restore();
+            }
         }
 
-        // ── 4. Hit flash: bright white overlay on kill ────────────────
-        if (gameState.weaponHitFlash > 0) {
-            const flashA = (gameState.weaponHitFlash / 9) * 0.72;
+        if (wcfg.style === "axe" && phase < 0.2) {
+            const gp = phase / 0.2;
+            const gleamX = baseX + (tipX - baseX) * gp;
+            const gleamY = baseY + (tipY - baseY) * gp;
+            ctx2.save();
             ctx2.globalCompositeOperation = "lighter";
-            ctx2.globalAlpha = flashA;
-            ctx2.drawImage(img, -dax, -day, dbw, dbh);
-            ctx2.globalCompositeOperation = "source-over";
-            ctx2.globalAlpha = 1;
+            ctx2.globalAlpha = Math.sin(gp * Math.PI) * 0.4;
+            ctx2.strokeStyle = "rgba(255,255,255,0.95)";
+            ctx2.lineWidth = wcfg.style === "axe" ? wcfg.tipWidth * 0.8 : wcfg.tipWidth * 1.35;
+            ctx2.lineCap = "round";
+            ctx2.shadowColor = "rgba(255,255,255,0.98)";
+            ctx2.shadowBlur = 18;
+            ctx2.beginPath();
+            ctx2.moveTo(gleamX - Math.cos(segment.angle) * bladeLen * 0.12, gleamY - Math.sin(segment.angle) * bladeLen * 0.12);
+            ctx2.lineTo(gleamX + Math.cos(segment.angle) * bladeLen * 0.08, gleamY + Math.sin(segment.angle) * bladeLen * 0.08);
+            ctx2.stroke();
+            ctx2.restore();
         }
 
-        ctx2.restore();
+        if (gameState.weaponHitFlash > 0 && wcfg.style === "axe") {
+            const flashA = (gameState.weaponHitFlash / 9) * 0.82;
+            drawBladeSweep(
+                ctx2,
+                baseX,
+                baseY,
+                tipX,
+                tipY,
+                3,
+                wcfg.tipWidth + 5,
+                "rgba(255,255,255,0.92)",
+                flashA,
+                22
+            );
+        }
     };
 
-    drawOne(gameState.weaponPoseSmooth.left, true);
-    drawOne(gameState.weaponPoseSmooth.right, false);
+    if (activeHand === "left") {
+        drawOne(gameState.weaponPoseSmooth.left);
+    } else if (activeHand === "right") {
+        drawOne(gameState.weaponPoseSmooth.right);
+    }
 }
 
 let _poseReady = false;
@@ -1913,25 +2347,70 @@ function onResults(results) {
     const landmarks = results.poseLandmarks;
     const leftWrist = landmarks[15];
     const rightWrist = landmarks[16];
+    const wcfg = WEAPONS[gameState.selectedWeaponIndex];
+    const weaponMode = wcfg && !wcfg.noWeapon;
 
     const lx = (1 - leftWrist.x) * gameW;
     const ly = leftWrist.y * gameH;
     const rx = (1 - rightWrist.x) * gameW;
     const ry = rightWrist.y * gameH;
 
+    if (weaponMode) {
+        if (gameState.leftWristHistory[0] && gameState.leftWristHistory[0].x != null) {
+            gameState.leftWristHistory = [];
+            gameState.leftTrail.clear();
+        }
+        if (gameState.rightWristHistory[0] && gameState.rightWristHistory[0].x != null) {
+            gameState.rightWristHistory = [];
+            gameState.rightTrail.clear();
+        }
+
+        const activeHand = getActiveWeaponHand();
+        gameState.activeWeaponHand = activeHand || gameState.activeWeaponHand;
+
+        if (activeHand === "left") {
+            const leftSegment = getWeaponSegment(gameState.weaponPoseSmooth.left, wcfg);
+            processWeaponSlash(gameState.leftWristHistory, leftSegment, wcfg.trailHue, gameState.leftTrail);
+            gameState.rightWristHistory = [];
+            gameState.rightTrail.clear();
+        } else if (activeHand === "right") {
+            const rightSegment = getWeaponSegment(gameState.weaponPoseSmooth.right, wcfg);
+            processWeaponSlash(gameState.rightWristHistory, rightSegment, wcfg.trailHue, gameState.rightTrail);
+            gameState.leftWristHistory = [];
+            gameState.leftTrail.clear();
+        }
+        return;
+    }
+
+    if (gameState.leftWristHistory[0] && gameState.leftWristHistory[0].tipX != null) {
+        gameState.leftWristHistory = [];
+        gameState.leftTrail.clear();
+    }
+    if (gameState.rightWristHistory[0] && gameState.rightWristHistory[0].tipX != null) {
+        gameState.rightWristHistory = [];
+        gameState.rightTrail.clear();
+    }
+
     if (landmarkVisible(leftWrist)) {
         processWristSlash(gameState.leftWristHistory, lx, ly, 195, gameState.leftWristSmooth, gameState.leftTrail);
     } else {
-        gameState.leftWristHistory = [];
-        gameState.leftWristSmooth = { x: null, y: null };
-        // trail fades naturally via tick()
+        gameState.leftWristSmooth.lostFrames++;
+        if (gameState.leftWristSmooth.lostFrames > WRIST_LOST_GRACE_FRAMES) {
+            clearWristTracking(gameState.leftWristHistory, gameState.leftWristSmooth, gameState.leftTrail);
+        } else if (gameState.leftWristHistory.length > WRIST_HISTORY_KEEP_ON_LOST) {
+            gameState.leftWristHistory = gameState.leftWristHistory.slice(-WRIST_HISTORY_KEEP_ON_LOST);
+        }
     }
 
     if (landmarkVisible(rightWrist)) {
         processWristSlash(gameState.rightWristHistory, rx, ry, 28, gameState.rightWristSmooth, gameState.rightTrail);
     } else {
-        gameState.rightWristHistory = [];
-        gameState.rightWristSmooth = { x: null, y: null };
+        gameState.rightWristSmooth.lostFrames++;
+        if (gameState.rightWristSmooth.lostFrames > WRIST_LOST_GRACE_FRAMES) {
+            clearWristTracking(gameState.rightWristHistory, gameState.rightWristSmooth, gameState.rightTrail);
+        } else if (gameState.rightWristHistory.length > WRIST_HISTORY_KEEP_ON_LOST) {
+            gameState.rightWristHistory = gameState.rightWristHistory.slice(-WRIST_HISTORY_KEEP_ON_LOST);
+        }
     }
 }
 
@@ -1955,8 +2434,11 @@ function gameLoop() {
 
     gameState.leftTrail.tick();
     gameState.rightTrail.tick();
-    gameState.leftTrail.draw(ctx);
-    gameState.rightTrail.draw(ctx);
+    const activeWeapon = WEAPONS[gameState.selectedWeaponIndex];
+    if (!activeWeapon || activeWeapon.noWeapon) {
+        gameState.leftTrail.draw(ctx);
+        gameState.rightTrail.draw(ctx);
+    }
 
     gameState.killBursts = gameState.killBursts.filter((b) => {
         const alive = b.update();
@@ -1985,7 +2467,7 @@ function gameLoop() {
     if (_swingSoundCooldown > 0) _swingSoundCooldown--;
     if (gameState.weaponHitFlash > 0) gameState.weaponHitFlash--;
 
-    drawHeldWeapons(ctx);
+    drawWeaponEffects(ctx);
 
     requestAnimationFrame(gameLoop);
 }
@@ -2005,8 +2487,9 @@ function initStage(stageIndex) {
     gameState.swingSparkles = [];
     gameState.leftWristHistory = [];
     gameState.rightWristHistory = [];
-    gameState.leftWristSmooth = { x: null, y: null };
-    gameState.rightWristSmooth = { x: null, y: null };
+    gameState.leftWristSmooth = { x: null, y: null, vx: 0, vy: 0, lostFrames: 0 };
+    gameState.rightWristSmooth = { x: null, y: null, vx: 0, vy: 0, lostFrames: 0 };
+    gameState.activeWeaponHand = "right";
     gameState.weaponPoseSmooth = { left: null, right: null };
 
     setBackground(config.background);
@@ -2113,8 +2596,15 @@ async function init() {
     }
 
     const pose = new Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`
+        locateFile: (file) => `${POSE_ASSET_BASE}/${file}`
     });
+    let hands = null;
+    let handsEnabled = typeof Hands === "function";
+    if (handsEnabled) {
+        hands = new Hands({
+            locateFile: (file) => `${HANDS_ASSET_BASE}/${file}`
+        });
+    }
 
     pose.setOptions({
         modelComplexity: 1,
@@ -2124,12 +2614,29 @@ async function init() {
         minDetectionConfidence: 0.55,
         minTrackingConfidence: 0.55
     });
+    if (hands) {
+        hands.setOptions({
+            maxNumHands: 2,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.55,
+            minTrackingConfidence: 0.55
+        });
+    }
 
     pose.onResults(onResults);
+    if (hands) hands.onResults(onHandsResults);
 
     const camera = new Camera(video, {
         onFrame: async () => {
             await pose.send({ image: video });
+            if (!handsEnabled || !hands) return;
+            try {
+                await hands.send({ image: video });
+            } catch (err) {
+                handsEnabled = false;
+                gameState.handPalms = [];
+                console.warn("Hand tracking disabled; falling back to pose wrist estimate.", err);
+            }
         },
         width: 640,
         height: 360
