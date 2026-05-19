@@ -2,6 +2,7 @@ import { useState } from "react";
 import { useNavigate } from "react-router";
 import { ArrowLeft, ArrowRight, Hand, Shield } from "lucide-react";
 import { Button } from "./ui/button";
+import { assetPath } from "../assetPath";
 
 type WeaponId = "knife" | "axe" | "none";
 
@@ -15,13 +16,13 @@ const weapons: Array<{
     id: "knife",
     name: "Knife",
     subtitle: "Fast blue palm slash",
-    image: "/mori-hero-game/img/weapon/knif.png",
+    image: assetPath("mori-hero-game/img/weapon/knif.png"),
   },
   {
     id: "axe",
     name: "Axe",
     subtitle: "Wide heavy sweep",
-    image: "/mori-hero-game/img/weapon/axe.png",
+    image: assetPath("mori-hero-game/img/weapon/axe.png"),
   },
   {
     id: "none",

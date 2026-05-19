@@ -1,5 +1,6 @@
 import { useEffect } from "react";
 import { useLocation, useNavigate } from "react-router";
+import { assetPath } from "../assetPath";
 
 const VALID_WEAPONS = new Set(["none", "knife", "axe"]);
 
@@ -22,7 +23,7 @@ export function GameplayScreen() {
   const location = useLocation();
   const weaponParam = new URLSearchParams(location.search).get("weapon") ?? "knife";
   const weapon = VALID_WEAPONS.has(weaponParam) ? weaponParam : "knife";
-  const gameIframePath = `/mori-hero-game/index.html?embed=1&weapon=${encodeURIComponent(weapon)}`;
+  const gameIframePath = `${assetPath("mori-hero-game/index.html")}?embed=1&weapon=${encodeURIComponent(weapon)}`;
 
   useEffect(() => {
     const handleMessage = (event: MessageEvent<EmbeddedGameMessage>) => {
