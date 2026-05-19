@@ -4,6 +4,7 @@ import { GameplayScreen } from "./components/GameplayScreen";
 import { ResultsScreen } from "./components/ResultsScreen";
 import { FlowDiagram } from "./components/FlowDiagram";
 import { WeaponSelectScreen } from "./components/WeaponSelectScreen";
+import { routerBase } from "./routerBase";
 
 export const router = createBrowserRouter([
   {
@@ -26,4 +27,6 @@ export const router = createBrowserRouter([
     path: "/flow",
     Component: FlowDiagram,
   },
-]);
+], {
+  basename: routerBase,
+});
