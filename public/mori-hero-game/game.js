@@ -12,10 +12,12 @@ const STAGE_CONFIGS = [
         background: "img/background01.png",
         monsters: {
             size: { min: 100, max: 160 },
-            speed: { vx: 0.28, vyMin: 2.0, vyMax: 3.2 },
+            speed: { vx: 0.24, vyMin: 1.7, vyMax: 2.8 },
             gravity: 0.022,
-            spawnInterval: { min: 1900, max: 2800 },
-            spawnCount: { min: 1, max: 2 },
+            spawnInterval: { min: 2400, max: 3600 },
+            spawnCount: { min: 1, max: 1 },
+            spawnEdges: [{ edge: "bottom", weight: 1 }],
+            traits: { armored: 0, shrinking: 0, elite: 0 },
             levelUpBonus: 0.20
         },
         pointsPerKill: 10
@@ -32,6 +34,12 @@ const STAGE_CONFIGS = [
             gravity: 0.032,
             spawnInterval: { min: 1600, max: 2400 },
             spawnCount: { min: 1, max: 3 },
+            spawnEdges: [
+                { edge: "bottom", weight: 8 },
+                { edge: "left", weight: 1 },
+                { edge: "right", weight: 1 }
+            ],
+            traits: { armored: 0.20, shrinking: 0, elite: 0 },
             levelUpBonus: 0.35
         },
         pointsPerKill: 15
@@ -48,6 +56,12 @@ const STAGE_CONFIGS = [
             gravity: 0.044,
             spawnInterval: { min: 1350, max: 2100 },
             spawnCount: { min: 2, max: 4 },
+            spawnEdges: [
+                { edge: "bottom", weight: 5 },
+                { edge: "left", weight: 2 },
+                { edge: "right", weight: 2 }
+            ],
+            traits: { armored: 0.26, shrinking: 0.22, elite: 0 },
             levelUpBonus: 0.50
         },
         pointsPerKill: 20
@@ -64,6 +78,13 @@ const STAGE_CONFIGS = [
             gravity: 0.055,
             spawnInterval: { min: 1150, max: 1900 },
             spawnCount: { min: 2, max: 5 },
+            spawnEdges: [
+                { edge: "bottom", weight: 4 },
+                { edge: "left", weight: 3 },
+                { edge: "right", weight: 3 },
+                { edge: "top", weight: 2 }
+            ],
+            traits: { armored: 0.30, shrinking: 0.26, elite: 0.08 },
             levelUpBonus: 0.68
         },
         pointsPerKill: 28
@@ -125,6 +146,13 @@ const NEAR_HIT_RADIUS_EXTRA = 125;
 const NEAR_HIT_COOLDOWN_FRAMES = 14;
 const LANDMARK_MIN_VIS = 0.35;
 const MAX_MONSTERS = 4;
+const DEFAULT_SPAWN_EDGES = [{ edge: "bottom", weight: 1 }];
+const TRAIT_TYPES = {
+    NORMAL: "normal",
+    ARMORED: "armored",
+    SHRINKING: "shrinking",
+    ELITE: "elite"
+};
 
 const monsterImages = [
     "img/sea-monster/blowfish.png",
@@ -600,6 +628,19 @@ function landmarkVisible(lm) {
     return v === undefined || v === null || v >= LANDMARK_MIN_VIS;
 }
 
+function weightedChoice(items, fallback) {
+    let total = 0;
+    for (const item of items) total += Math.max(0, item.weight ?? 0);
+    if (total <= 0) return fallback;
+
+    let pick = Math.random() * total;
+    for (const item of items) {
+        pick -= Math.max(0, item.weight ?? 0);
+        if (pick <= 0) return item;
+    }
+    return items[items.length - 1] ?? fallback;
+}
+
 class Monster {
     constructor(config) {
         this.size =
@@ -615,6 +656,11 @@ class Monster {
         this.moveSlowRampFrames = 18;
         this.hitVibe = 0;
         this.nearHitCooldownFrames = 0;
+        this.trait = this.pickTrait(config);
+        this.maxHealth = this.trait === TRAIT_TYPES.ARMORED || this.trait === TRAIT_TYPES.ELITE ? 2 : 1;
+        this.health = this.maxHealth;
+        this.shrinkPhase = Math.random() * Math.PI * 2;
+        this.shrinkSpeed = 0.065 + Math.random() * 0.035;
 
         this.puffPhase = Math.random() * Math.PI * 2;
         this.puffSpeed = 0.09 + Math.random() * 0.05;
@@ -672,8 +718,15 @@ class Monster {
         }
     }
 
+    pickTrait(config) {
+        const traits = config.monsters.traits ?? {};
+        if (Math.random() < (traits.elite ?? 0)) return TRAIT_TYPES.ELITE;
+        if (Math.random() < (traits.armored ?? 0)) return TRAIT_TYPES.ARMORED;
+        if (Math.random() < (traits.shrinking ?? 0)) return TRAIT_TYPES.SHRINKING;
+        return TRAIT_TYPES.NORMAL;
+    }
+
     spawnCornerGlide(config, opts = {}) {
-        const fromLeft = opts.fromLeft ?? Math.random() > 0.5;
         const sp = config.monsters.speed;
         const vyMid = (sp.vyMin + sp.vyMax) / 2;
         // Stage 1 baseline vyMid ≈ 4.2; faster stages get proportionally shorter travel time
@@ -681,18 +734,31 @@ class Monster {
             opts.travelFrames ??
             Math.round((4.2 / vyMid) * (175 + Math.random() * 50));
         const gravityScale = opts.gravityScale ?? (config.id === 1 ? 0.18 : 0.22);
-
-        // Spawn from bottom-left / bottom-right (slightly off-screen) and glide toward center.
-        const xEdge = fromLeft ? -this.size * 0.15 : gameW + this.size * 0.15;
-        const yEdge = gameH + this.size * (0.34 + Math.random() * 0.22);
-
+        const spawnPick = weightedChoice(config.monsters.spawnEdges ?? DEFAULT_SPAWN_EDGES, DEFAULT_SPAWN_EDGES[0]);
+        const edge = opts.edge ?? spawnPick.edge;
+        const targetJitterX = (Math.random() - 0.5) * 0.18;
+        const targetJitterY = (Math.random() - 0.5) * 0.12;
         const targetX =
-            opts.targetX ?? gameW * (0.5 + (Math.random() - 0.5) * 0.18);
+            opts.targetX ?? gameW * (0.5 + targetJitterX);
         const targetY =
-            opts.targetY ?? gameH * (0.46 + Math.random() * 0.08);
+            opts.targetY ?? gameH * (0.48 + targetJitterY);
+        let xEdge = gameW * (0.18 + Math.random() * 0.64);
+        let yEdge = gameH + this.size * (0.42 + Math.random() * 0.22);
+
+        if (edge === "left") {
+            xEdge = -this.size * (0.48 + Math.random() * 0.2);
+            yEdge = gameH * (0.22 + Math.random() * 0.56);
+        } else if (edge === "right") {
+            xEdge = gameW + this.size * (0.48 + Math.random() * 0.2);
+            yEdge = gameH * (0.22 + Math.random() * 0.56);
+        } else if (edge === "top") {
+            xEdge = gameW * (0.16 + Math.random() * 0.68);
+            yEdge = -this.size * (0.48 + Math.random() * 0.2);
+        }
 
         this.x = xEdge;
         this.y = yEdge;
+        this.spawnEdge = edge;
 
         this.gravity = config.monsters.gravity * gravityScale;
 
@@ -704,9 +770,7 @@ class Monster {
     }
 
     spawnCrabHorizontal(config) {
-        const fromLeft = Math.random() > 0.5;
         this.spawnCornerGlide(config, {
-            fromLeft,
             targetY: gameH * (0.48 + Math.random() * 0.06),
             gravityScale: 0.2
         });
@@ -733,20 +797,16 @@ class Monster {
     }
 
     spawnEelSlither(config) {
-        const fromLeft = Math.random() > 0.5;
         this.spawnCornerGlide(config, {
-            fromLeft,
             targetY: gameH * (0.42 + Math.random() * 0.12),
             gravityScale: 0.2
         });
-        this.rotation = fromLeft ? -0.15 : 0.15;
+        this.rotation = this.vx >= 0 ? -0.15 : 0.15;
         this.spin = 0;
     }
 
     spawnGeneric(config) {
-        const fromLeft = Math.random() > 0.5;
         this.spawnCornerGlide(config, {
-            fromLeft,
             targetY: gameH * (0.46 + Math.random() * 0.12),
             gravityScale: 0.22
         });
@@ -773,8 +833,14 @@ class Monster {
         return 1;
     }
 
+    getTraitScale() {
+        if (this.trait !== TRAIT_TYPES.SHRINKING && this.trait !== TRAIT_TYPES.ELITE) return 1;
+        const pulse = (Math.sin(this.spawnAge * this.shrinkSpeed + this.shrinkPhase) + 1) / 2;
+        return 0.66 + 0.34 * pulse;
+    }
+
     getDrawScale() {
-        return this.size * this.getSpawnScale() * this.getSpeciesScale();
+        return this.size * this.getSpawnScale() * this.getSpeciesScale() * this.getTraitScale();
     }
 
     update() {
@@ -818,10 +884,10 @@ class Monster {
         this.x += this.vx * moveK;
         this.y += this.vy * moveK;
 
-        if (this.x < this.size / 2) {
+        if (this.spawnEdge === "bottom" && this.x < this.size / 2) {
             this.x = this.size / 2;
             this.vx = Math.abs(this.vx);
-        } else if (this.x > gameW - this.size / 2) {
+        } else if (this.spawnEdge === "bottom" && this.x > gameW - this.size / 2) {
             this.x = gameW - this.size / 2;
             this.vx = -Math.abs(this.vx);
         }
@@ -902,6 +968,22 @@ class Monster {
             }
         }
 
+        if (this.trait === TRAIT_TYPES.ARMORED || this.trait === TRAIT_TYPES.ELITE) {
+            ctx2.save();
+            const armorA = this.trait === TRAIT_TYPES.ELITE ? 0.9 : 0.72;
+            ctx2.globalAlpha = armorA * this.opacity;
+            ctx2.strokeStyle = this.trait === TRAIT_TYPES.ELITE ? "rgba(255, 209, 102, 0.95)" : "rgba(173, 232, 244, 0.95)";
+            ctx2.lineWidth = this.trait === TRAIT_TYPES.ELITE ? 7 : 5;
+            ctx2.shadowColor = ctx2.strokeStyle;
+            ctx2.shadowBlur = this.trait === TRAIT_TYPES.ELITE ? 24 : 16;
+            ctx2.setLineDash([14, 10]);
+            ctx2.lineDashOffset = -this.spawnAge * 0.9;
+            ctx2.beginPath();
+            ctx2.arc(0, 0, half + 14, 0, Math.PI * 2);
+            ctx2.stroke();
+            ctx2.restore();
+        }
+
         if (this.image && this.image.complete && this.image.naturalWidth) {
             ctx2.drawImage(this.image, -half, -half, s, s);
         } else {
@@ -914,6 +996,21 @@ class Monster {
             ctx2.textAlign = "center";
             ctx2.textBaseline = "middle";
             ctx2.fillText("Creature", 0, 0);
+        }
+
+        if (this.maxHealth > 1) {
+            ctx2.save();
+            ctx2.translate(0, -half - 26);
+            for (let i = 0; i < this.maxHealth; i++) {
+                ctx2.beginPath();
+                ctx2.arc((i - (this.maxHealth - 1) / 2) * 18, 0, 6, 0, Math.PI * 2);
+                ctx2.fillStyle = i < this.health ? "#ffd166" : "rgba(255,255,255,0.35)";
+                ctx2.strokeStyle = "rgba(0,0,0,0.5)";
+                ctx2.lineWidth = 2;
+                ctx2.fill();
+                ctx2.stroke();
+            }
+            ctx2.restore();
         }
         ctx2.restore();
     }
@@ -1556,9 +1653,18 @@ function tryHitMonsterAt(px, py, hitIds, radiusExtra = HIT_RADIUS_EXTRA) {
 
         if (dist2 < rHit * rHit) {
             hitIds.add(monster);
-            monster.alive = false;
             monster.hitVibe = 1;
             monster.nearHitCooldownFrames = 0;
+            monster.health--;
+            gameState.weaponHitFlash = 9;
+
+            if (monster.health > 0) {
+                gameState.floatTexts.push(new FloatScore(monster.x, monster.y - 42, "Crack!"));
+                playHitSound(0);
+                continue;
+            }
+
+            monster.alive = false;
             gameState.monstersDefeated++;
             gameState.combo++;
             const comboTier = Math.floor(gameState.combo / 5);
@@ -1569,7 +1675,6 @@ function tryHitMonsterAt(px, py, hitIds, radiusExtra = HIT_RADIUS_EXTRA) {
             gameState.killBursts.push(new KillBurst(monster.x, monster.y));
             gameState.floatTexts.push(new FloatScore(monster.x, monster.y - 42, `+${points}`));
             playHitSound(comboTier);
-            gameState.weaponHitFlash = 9;
             if (monster.isBoss) {
                 showKupeVictory(monster.x, monster.y);
             } else {
