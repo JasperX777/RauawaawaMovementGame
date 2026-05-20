@@ -12,10 +12,11 @@ const STAGE_CONFIGS = [
         background: "img/background01.png",
         monsters: {
             size: { min: 100, max: 160 },
-            speed: { vx: 0.24, vyMin: 1.7, vyMax: 2.8 },
+            speed: { vx: 0.44, vyMin: 3.1, vyMax: 4.7 },
             gravity: 0.022,
-            spawnInterval: { min: 2400, max: 3600 },
-            spawnCount: { min: 1, max: 1 },
+            spawnInterval: { min: 1700, max: 2500 },
+            spawnCount: { min: 1, max: 2 },
+            maxAlive: 4,
             spawnEdges: [{ edge: "bottom", weight: 1 }],
             traits: { armored: 0, shrinking: 0, elite: 0 },
             levelUpBonus: 0.20
@@ -30,10 +31,11 @@ const STAGE_CONFIGS = [
         background: "img/background02.png",
         monsters: {
             size: { min: 92, max: 150 },
-            speed: { vx: 0.42, vyMin: 3.0, vyMax: 4.8 },
+            speed: { vx: 0.54, vyMin: 3.8, vyMax: 6.0 },
             gravity: 0.032,
             spawnInterval: { min: 1600, max: 2400 },
             spawnCount: { min: 1, max: 3 },
+            maxAlive: 4,
             spawnEdges: [
                 { edge: "bottom", weight: 8 },
                 { edge: "left", weight: 1 },
@@ -47,15 +49,16 @@ const STAGE_CONFIGS = [
     {
         id: 3,
         name: "Deep current",
-        targetScore: 380,
+        targetScore: 480,
         lives: 6,
         background: "img/background03.png",
         monsters: {
             size: { min: 84, max: 140 },
-            speed: { vx: 0.55, vyMin: 4.0, vyMax: 6.5 },
+            speed: { vx: 0.70, vyMin: 5.1, vyMax: 8.0 },
             gravity: 0.044,
-            spawnInterval: { min: 1350, max: 2100 },
-            spawnCount: { min: 2, max: 4 },
+            spawnInterval: { min: 1250, max: 1900 },
+            spawnCount: { min: 2, max: 5 },
+            maxAlive: 5,
             spawnEdges: [
                 { edge: "bottom", weight: 5 },
                 { edge: "left", weight: 2 },
@@ -69,15 +72,16 @@ const STAGE_CONFIGS = [
     {
         id: 4,
         name: "Final abyss",
-        targetScore: 520,
+        targetScore: 700,
         lives: 5,
         background: "img/background02.png",
         monsters: {
             size: { min: 78, max: 130 },
-            speed: { vx: 0.70, vyMin: 5.0, vyMax: 8.2 },
+            speed: { vx: 0.88, vyMin: 6.3, vyMax: 10.0 },
             gravity: 0.055,
-            spawnInterval: { min: 1150, max: 1900 },
-            spawnCount: { min: 2, max: 5 },
+            spawnInterval: { min: 1000, max: 1700 },
+            spawnCount: { min: 3, max: 6 },
+            maxAlive: 6,
             spawnEdges: [
                 { edge: "bottom", weight: 4 },
                 { edge: "left", weight: 3 },
@@ -146,6 +150,8 @@ const NEAR_HIT_RADIUS_EXTRA = 125;
 const NEAR_HIT_COOLDOWN_FRAMES = 14;
 const LANDMARK_MIN_VIS = 0.35;
 const MAX_MONSTERS = 4;
+const ARMORED_HIT_INVULN_FRAMES = 12;
+const SHRINK_TRAIT_DELAY_FRAMES = 42;
 const DEFAULT_SPAWN_EDGES = [{ edge: "bottom", weight: 1 }];
 const TRAIT_TYPES = {
     NORMAL: "normal",
@@ -659,6 +665,7 @@ class Monster {
         this.trait = this.pickTrait(config);
         this.maxHealth = this.trait === TRAIT_TYPES.ARMORED || this.trait === TRAIT_TYPES.ELITE ? 2 : 1;
         this.health = this.maxHealth;
+        this.hitInvulnFrames = 0;
         this.shrinkPhase = Math.random() * Math.PI * 2;
         this.shrinkSpeed = 0.065 + Math.random() * 0.035;
 
@@ -835,7 +842,9 @@ class Monster {
 
     getTraitScale() {
         if (this.trait !== TRAIT_TYPES.SHRINKING && this.trait !== TRAIT_TYPES.ELITE) return 1;
-        const pulse = (Math.sin(this.spawnAge * this.shrinkSpeed + this.shrinkPhase) + 1) / 2;
+        if (this.spawnAge < this.spawnDuration + SHRINK_TRAIT_DELAY_FRAMES) return 1;
+        const activeAge = this.spawnAge - this.spawnDuration - SHRINK_TRAIT_DELAY_FRAMES;
+        const pulse = (Math.sin(activeAge * this.shrinkSpeed + this.shrinkPhase) + 1) / 2;
         return 0.66 + 0.34 * pulse;
     }
 
@@ -852,6 +861,7 @@ class Monster {
 
         if (this.hitVibe > 0) this.hitVibe = Math.max(0, this.hitVibe - 0.055);
         if (this.nearHitCooldownFrames > 0) this.nearHitCooldownFrames--;
+        if (this.hitInvulnFrames > 0) this.hitInvulnFrames--;
 
         if (sp === SPECIES.EEL) {
             this.eelPhase += this.eelWiggle;
@@ -1489,8 +1499,10 @@ function spawnMonster() {
     const config = STAGE_CONFIGS[gameState.currentStage];
     const aliveCount = gameState.monsters.filter((m) => m.alive).length;
 
-    if (aliveCount < MAX_MONSTERS) {
-        const maxPossible = MAX_MONSTERS - aliveCount;
+    const maxAlive = config.monsters.maxAlive ?? MAX_MONSTERS;
+
+    if (aliveCount < maxAlive) {
+        const maxPossible = maxAlive - aliveCount;
         const desired =
             config.monsters.spawnCount.min +
             Math.floor(
@@ -1638,6 +1650,12 @@ function approximateCubicLength(b0, b1, b2, b3) {
     return len;
 }
 
+function canDamageMonster(monster) {
+    if (monster.health >= monster.maxHealth) return true;
+    if (monster.hitInvulnFrames > 0) return false;
+    return true;
+}
+
 function tryHitMonsterAt(px, py, hitIds, radiusExtra = HIT_RADIUS_EXTRA) {
     for (const monster of gameState.monsters) {
         if (!monster.alive || hitIds.has(monster)) continue;
@@ -1655,8 +1673,12 @@ function tryHitMonsterAt(px, py, hitIds, radiusExtra = HIT_RADIUS_EXTRA) {
             hitIds.add(monster);
             monster.hitVibe = 1;
             monster.nearHitCooldownFrames = 0;
-            monster.health--;
             gameState.weaponHitFlash = 9;
+
+            if (!canDamageMonster(monster)) continue;
+
+            monster.health--;
+            monster.hitInvulnFrames = monster.health > 0 ? ARMORED_HIT_INVULN_FRAMES : 0;
 
             if (monster.health > 0) {
                 gameState.floatTexts.push(new FloatScore(monster.x, monster.y - 42, "Crack!"));

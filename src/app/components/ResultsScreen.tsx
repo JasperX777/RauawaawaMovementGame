@@ -1,5 +1,5 @@
 import { useNavigate, useLocation } from "react-router";
-import { Trophy, Home, RotateCcw, Star, Zap } from "lucide-react";
+import { Trophy, Home, RotateCcw, Star } from "lucide-react";
 import { Button } from "./ui/button";
 
 export function ResultsScreen() {
@@ -12,6 +12,7 @@ export function ResultsScreen() {
     stageReached = 4,
   } = location.state || {};
   const isWin = resultType === "win";
+  const stagesCleared = isWin ? 4 : Math.max(0, Math.min(4, stageReached - 1));
 
   // Keep the result page focused on encouragement and journey completion.
   const getPerformanceMessage = () => {
@@ -100,31 +101,21 @@ export function ResultsScreen() {
           </div>
         </div>
 
-        {/* Main Stats - Lives Saved (Hero Stat) */}
-        <div className="bg-gradient-to-br from-cyan-500/85 to-teal-500/85 rounded-3xl shadow-2xl p-12 mb-8 border-4 border-amber-200 backdrop-blur-sm">
-          <p className="text-4xl text-amber-100 mb-4 font-semibold">
-            {isWin ? "Sea Creatures Defeated | Ngā Taniwha Kua Hinga" : "Sea Creatures Defeated | Ngā Taniwha Kua Hinga"}
-          </p>
-          <p className="text-9xl text-slate-950 font-bold mb-4">{monstersDefeated}</p>
-          <div className="flex items-center justify-center gap-3">
-            <Zap className="w-12 h-12 text-amber-100 fill-amber-100" />
-            <p className="text-3xl text-amber-100 font-medium">
-              {isWin ? "You completed the whole journey!" : "Your effort matters!"}
-            </p>
-            <Zap className="w-12 h-12 text-amber-100 fill-amber-100" />
+        {/* Result Summary */}
+        <div className="mb-10">
+          <div className="bg-gradient-to-br from-cyan-500/88 to-teal-500/88 rounded-3xl shadow-2xl p-12 mb-6 border-4 border-amber-200 backdrop-blur-sm">
+            <p className="text-4xl text-amber-100 mb-4 font-semibold">Final Score | Kaute Whakamutunga</p>
+            <p className="text-9xl text-slate-950 font-bold">{score}</p>
           </div>
-        </div>
 
-        {/* Journey Summary */}
-        <div className="bg-slate-950/40 rounded-3xl shadow-xl p-10 mb-10 border-4 border-cyan-200/30 backdrop-blur-md">
           <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-            <div className="bg-gradient-to-br from-sky-100 to-cyan-100 rounded-2xl p-10 border-4 border-cyan-200/70">
-              <p className="text-3xl text-sky-900 mb-4 font-semibold">Journey Progress | Haerenga</p>
-              <p className="text-7xl text-slate-950 font-bold">{isWin ? "4/4" : `${stageReached}/4`}</p>
+            <div className="bg-gradient-to-br from-sky-100 to-cyan-100 rounded-2xl p-10 border-4 border-cyan-200/70 shadow-xl">
+              <p className="text-3xl text-sky-900 mb-4 font-semibold">Stages Cleared | Haerenga</p>
+              <p className="text-7xl text-slate-950 font-bold">{stagesCleared}/4</p>
             </div>
-            <div className="bg-gradient-to-br from-amber-100 to-yellow-100 rounded-2xl p-10 border-4 border-amber-300">
-              <p className="text-3xl text-amber-900 mb-4 font-semibold">Final Score | Kaute Whakamutunga</p>
-              <p className="text-7xl text-amber-950 font-bold">{score}</p>
+            <div className="bg-gradient-to-br from-amber-100 to-yellow-100 rounded-2xl p-10 border-4 border-amber-300 shadow-xl">
+              <p className="text-3xl text-amber-900 mb-4 font-semibold">Total Defeated | Ngā Taniwha</p>
+              <p className="text-7xl text-amber-950 font-bold">{monstersDefeated}</p>
             </div>
           </div>
         </div>
